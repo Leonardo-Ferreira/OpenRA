@@ -122,7 +122,7 @@ namespace OpenRA
 				Team = client.Team,
 				SpawnPoint = runtimePlayer.SpawnPoint,
 				IsRandomFaction = runtimePlayer.Faction.InternalName != client.Faction,
-				IsRandomSpawnPoint = runtimePlayer.SpawnPoint != client.SpawnPoint,
+				IsRandomSpawnPoint = runtimePlayer.DisplaySpawnPoint == 0,
 				Fingerprint = client.Fingerprint
 			};
 
@@ -178,6 +178,9 @@ namespace OpenRA
 
 			/// <summary>The time when this player won or lost the game.</summary>
 			public DateTime OutcomeTimestampUtc;
+
+			/// <summary>The frame at which this player disconnected.</summary>
+			public int DisconnectFrame;
 
 			#endregion
 		}

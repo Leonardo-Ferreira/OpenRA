@@ -39,7 +39,13 @@ namespace OpenRA.Network
 					{
 						var client = orderManager.LobbyInfo.ClientWithIndex(clientId);
 						if (client != null)
+						{
 							client.State = Session.ClientState.Disconnected;
+							var player = world?.FindPlayerByClient(client);
+							if (player != null)
+								world.OnPlayerDisconnected(player);
+						}
+
 						break;
 					}
 
@@ -330,28 +336,23 @@ namespace OpenRA.Network
 							break;
 
 						if (order.GroupedActors == null)
-							ResolveOrder(order, world.WorldActor.TraitsImplementing<IValidateOrder>(), orderManager, clientId);
+							ResolveOrder(order, world, orderManager, clientId);
 						else
-						{
-							// PERF: Cache the result of TraitsImplementing as we are likely to use it for several order subjects
-							var validateOrders = world.WorldActor.TraitsImplementing<IValidateOrder>().ToArray();
 							foreach (var subject in order.GroupedActors)
-								ResolveOrder(Order.FromGroupedOrder(order, subject), validateOrders, orderManager, clientId);
-						}
+								ResolveOrder(Order.FromGroupedOrder(order, subject), world, orderManager, clientId);
 
 						break;
 					}
 			}
 		}
 
-		static void ResolveOrder(Order order, IEnumerable<IValidateOrder> validateOrders, OrderManager orderManager, int clientId)
+		static void ResolveOrder(Order order, World world, OrderManager orderManager, int clientId)
 		{
 			if (order.Subject == null || order.Subject.IsDead)
 				return;
 
-			if (validateOrders.All(vo => vo.OrderValidation(orderManager, order.Subject.World, clientId, order)))
-				foreach (var t in order.Subject.TraitsImplementing<IResolveOrder>())
-					t.ResolveOrder(order.Subject, order);
+			if (world.OrderValidators.All(vo => vo.OrderValidation(orderManager, world, clientId, order)))
+				order.Subject.ResolveOrder(order);
 		}
 
 		static void SetOrderLag(OrderManager o)

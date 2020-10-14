@@ -18,9 +18,11 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using OpenRA.FileFormats;
 using OpenRA.Network;
 using OpenRA.Primitives;
 using OpenRA.Support;
+using OpenRA.Traits;
 
 namespace OpenRA.Server
 {
@@ -69,6 +71,10 @@ namespace OpenRA.Server
 
 		volatile ActionQueue delayedActions = new ActionQueue();
 		int waitingForAuthenticationCallback = 0;
+
+		ReplayRecorder recorder;
+		GameInformation gameInfo;
+		readonly List<GameInformation.Player> worldPlayers = new List<GameInformation.Player>();
 
 		public ServerState State
 		{
@@ -123,6 +129,42 @@ namespace OpenRA.Server
 		{
 			foreach (var t in serverTraits.WithInterface<IEndGame>())
 				t.GameEnded(this);
+
+			recorder?.Dispose();
+			recorder = null;
+		}
+
+		// Craft a fake handshake request/response because that's the
+		// only way to expose the Version and OrdersProtocol.
+		public void RecordFakeHandshake()
+		{
+			var request = new HandshakeRequest
+			{
+				Mod = ModData.Manifest.Id,
+				Version = ModData.Manifest.Metadata.Version,
+			};
+
+			recorder.ReceiveFrame(0, 0, new Order("HandshakeRequest", null, false)
+			{
+				Type = OrderType.Handshake,
+				IsImmediate = true,
+				TargetString = request.Serialize(),
+			}.Serialize());
+
+			var response = new HandshakeResponse()
+			{
+				Mod = ModData.Manifest.Id,
+				Version = ModData.Manifest.Metadata.Version,
+				OrdersProtocol = ProtocolVersion.Orders,
+				Client = new Session.Client(),
+			};
+
+			recorder.ReceiveFrame(0, 0, new Order("HandshakeResponse", null, false)
+			{
+				Type = OrderType.Handshake,
+				IsImmediate = true,
+				TargetString = response.Serialize(),
+			}.Serialize());
 		}
 
 		public Server(List<IPEndPoint> endpoints, ServerSettings settings, ModData modData, ServerType type)
@@ -197,6 +239,15 @@ namespace OpenRA.Server
 					Dedicated = Type == ServerType.Dedicated
 				}
 			};
+
+			if (Settings.RecordReplays && Type == ServerType.Dedicated)
+			{
+				recorder = new ReplayRecorder(() => { return Game.TimestampedFilename(extra: "-Server"); });
+
+				// We only need one handshake to initialize the replay.
+				// Add it now, then ignore the redundant handshakes from each client
+				RecordFakeHandshake();
+			}
 
 			new Thread(_ =>
 			{
@@ -628,11 +679,114 @@ namespace OpenRA.Server
 			}
 		}
 
+		bool AnyUndefinedWinStates()
+		{
+			var lastTeam = -1;
+			var remainingPlayers = gameInfo.Players.Where(p => p.Outcome == WinState.Undefined);
+			foreach (var player in remainingPlayers)
+			{
+				if (lastTeam >= 0 && (player.Team != lastTeam || player.Team == 0))
+					return true;
+
+				lastTeam = player.Team;
+			}
+
+			return false;
+		}
+
+		void SetPlayerDefeat(int playerIndex)
+		{
+			var defeatedPlayer = worldPlayers[playerIndex];
+			if (defeatedPlayer == null || defeatedPlayer.Outcome != WinState.Undefined)
+				return;
+
+			defeatedPlayer.Outcome = WinState.Lost;
+			defeatedPlayer.OutcomeTimestampUtc = DateTime.UtcNow;
+
+			// Set remaining players as winners if only one side remains
+			if (!AnyUndefinedWinStates())
+			{
+				var now = DateTime.UtcNow;
+				var remainingPlayers = gameInfo.Players.Where(p => p.Outcome == WinState.Undefined);
+				foreach (var winner in remainingPlayers)
+				{
+					winner.Outcome = WinState.Won;
+					winner.OutcomeTimestampUtc = now;
+				}
+			}
+		}
+
+		void OutOfSync(int frame)
+		{
+			Log.Write("server", "Out of sync detected at frame {0}, cancel replay recording", frame);
+
+			// Make sure the written file is not valid
+			// TODO: storing a serverside replay on desync would be extremely useful
+			recorder.Metadata = null;
+
+			recorder.Dispose();
+
+			// Stop the recording
+			recorder = null;
+		}
+
+		readonly Dictionary<int, byte[]> syncForFrame = new Dictionary<int, byte[]>();
+		int lastDefeatStateFrame;
+		ulong lastDefeatState;
+
+		void HandleSyncOrder(int frame, byte[] packet)
+		{
+			if (syncForFrame.TryGetValue(frame, out var existingSync))
+			{
+				if (packet.Length != existingSync.Length)
+				{
+					OutOfSync(frame);
+					return;
+				}
+
+				for (var i = 0; i < packet.Length; i++)
+				{
+					if (packet[i] != existingSync[i])
+					{
+						OutOfSync(frame);
+						return;
+					}
+				}
+			}
+			else
+			{
+				// Update player losses based on the new defeat state.
+				// Do this once for the first player, the check above
+				// guarantees a desync if any other player disagrees.
+				var playerDefeatState = BitConverter.ToUInt64(packet, 1 + 4);
+				if (frame > lastDefeatStateFrame && lastDefeatState != playerDefeatState)
+				{
+					var newDefeats = playerDefeatState & ~lastDefeatState;
+					for (var i = 0; i < worldPlayers.Count; i++)
+						if ((newDefeats & (1UL << i)) != 0)
+							SetPlayerDefeat(i);
+
+					lastDefeatState = playerDefeatState;
+					lastDefeatStateFrame = frame;
+				}
+
+				syncForFrame.Add(frame, packet);
+			}
+		}
+
 		public void DispatchOrdersToClients(Connection conn, int frame, byte[] data)
 		{
 			var from = conn != null ? conn.PlayerIndex : 0;
 			foreach (var c in Conns.Except(conn).ToList())
 				DispatchOrdersToClient(c, from, frame, data);
+
+			if (recorder != null)
+			{
+				recorder.ReceiveFrame(from, frame, data);
+
+				if (data.Length == 1 + 4 + 8 && data[0] == (byte)OrderType.SyncHash)
+					HandleSyncOrder(frame, data);
+			}
 		}
 
 		public void DispatchOrders(Connection conn, int frame, byte[] data)
@@ -890,6 +1044,12 @@ namespace OpenRA.Server
 					// Send disconnected order, even if still in the lobby
 					DispatchOrdersToClients(toDrop, 0, Order.FromTargetString("Disconnected", "", true).Serialize());
 
+					if (gameInfo != null && !dropClient.IsObserver)
+					{
+						var disconnectedPlayer = gameInfo.Players.First(p => p.ClientIndex == toDrop.PlayerIndex);
+						disconnectedPlayer.DisconnectFrame = toDrop.MostRecentFrame;
+					}
+
 					LobbyInfo.Clients.RemoveAll(c => c.Index == toDrop.PlayerIndex);
 					LobbyInfo.ClientPings.RemoveAll(p => p.Index == toDrop.PlayerIndex);
 
@@ -1034,12 +1194,44 @@ namespace OpenRA.Server
 				// TODO: Enable for multiplayer (non-dedicated servers only) once the lobby UI has been created
 				LobbyInfo.GlobalSettings.GameSavesEnabled = Type != ServerType.Dedicated && LobbyInfo.NonBotClients.Count() == 1;
 
+				// Player list for win/loss tracking
+				// HACK: NonCombatant and non-Playable players are set to null to simplify replay tracking
+				// The null padding is needed to keep the player indexes in sync with world.Players on the clients
+				// This will need to change if future code wants to use worldPlayers for other purposes
+				foreach (var cmpi in Map.Rules.Actors["world"].TraitInfos<ICreatePlayersInfo>())
+					cmpi.CreateServerPlayers(Map, LobbyInfo, worldPlayers);
+
+				if (recorder != null)
+				{
+					gameInfo = new GameInformation
+					{
+						Mod = Game.ModData.Manifest.Id,
+						Version = Game.ModData.Manifest.Metadata.Version,
+						MapUid = Map.Uid,
+						MapTitle = Map.Title,
+						StartTimeUtc = DateTime.UtcNow,
+					};
+
+					// Replay metadata should only include the playable players
+					foreach (var p in worldPlayers)
+						if (p != null)
+							gameInfo.Players.Add(p);
+
+					recorder.Metadata = new ReplayMetadata(gameInfo);
+				}
+
 				SyncLobbyInfo();
 				State = ServerState.GameStarted;
 
+				var disconnectData = new[] { (byte)OrderType.Disconnect };
 				foreach (var c in Conns)
+				{
 					foreach (var d in Conns)
-						DispatchOrdersToClient(c, d.PlayerIndex, int.MaxValue, new[] { (byte)OrderType.Disconnect });
+						DispatchOrdersToClient(c, d.PlayerIndex, int.MaxValue, disconnectData);
+
+					if (recorder != null)
+						recorder.ReceiveFrame(c.PlayerIndex, int.MaxValue, disconnectData);
+				}
 
 				if (GameSave == null && LobbyInfo.GlobalSettings.GameSavesEnabled)
 					GameSave = new GameSave();
