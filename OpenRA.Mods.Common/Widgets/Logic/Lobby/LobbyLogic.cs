@@ -60,6 +60,7 @@ namespace OpenRA.Mods.Common.Widgets.Logic
 		MapPreview map;
 		bool addBotOnMapLoad;
 		bool disableTeamChat;
+		bool insufficientPlayerSpawns;
 		bool teamChat;
 		bool updateDiscordStatus = true;
 		Dictionary<int, SpawnOccupant> spawnOccupants = new Dictionary<int, SpawnOccupant>();
@@ -136,6 +137,7 @@ namespace OpenRA.Mods.Common.Widgets.Logic
 						LobbyUtils.SelectSpawnPoint(orderManager, preview, mapPreview, mi))
 				},
 				{ "getSpawnOccupants", (Func<Dictionary<int, SpawnOccupant>>)(() => spawnOccupants) },
+				{ "getDisabledSpawnPoints", (Func<HashSet<int>>)(() => orderManager.LobbyInfo.DisabledSpawnPoints) },
 				{ "showUnoccupiedSpawnpoints", true },
 			});
 
@@ -367,7 +369,8 @@ namespace OpenRA.Mods.Common.Widgets.Logic
 			{
 				startGameButton.IsDisabled = () => configurationDisabled() || map.Status != MapStatus.Available ||
 					orderManager.LobbyInfo.Slots.Any(sl => sl.Value.Required && orderManager.LobbyInfo.ClientInSlot(sl.Key) == null) ||
-					(!orderManager.LobbyInfo.GlobalSettings.EnableSingleplayer && orderManager.LobbyInfo.NonBotPlayers.Count() < 2);
+					(!orderManager.LobbyInfo.GlobalSettings.EnableSingleplayer && orderManager.LobbyInfo.NonBotPlayers.Count() < 2) ||
+					insufficientPlayerSpawns;
 
 				startGameButton.OnClick = () =>
 				{
@@ -570,6 +573,8 @@ namespace OpenRA.Mods.Common.Widgets.Logic
 					c.Bot == null &&
 					c.Team == orderManager.LocalClient.Team);
 
+			insufficientPlayerSpawns = LobbyUtils.InsufficientEnabledSpawnPoints(map, orderManager.LobbyInfo);
+
 			if (disableTeamChat)
 				teamChat = false;
 
@@ -619,6 +624,7 @@ namespace OpenRA.Mods.Common.Widgets.Logic
 					LobbyUtils.SetupEditableColorWidget(template, slot, client, orderManager, shellmapWorld, colorPreview);
 					LobbyUtils.SetupEditableFactionWidget(template, slot, client, orderManager, factions);
 					LobbyUtils.SetupEditableTeamWidget(template, slot, client, orderManager, map);
+					LobbyUtils.SetupEditableHandicapWidget(template, slot, client, orderManager, map);
 					LobbyUtils.SetupEditableSpawnWidget(template, slot, client, orderManager, map);
 					LobbyUtils.SetupEditableReadyWidget(template, slot, client, orderManager, map);
 				}
@@ -635,6 +641,7 @@ namespace OpenRA.Mods.Common.Widgets.Logic
 					if (isHost)
 					{
 						LobbyUtils.SetupEditableTeamWidget(template, slot, client, orderManager, map);
+						LobbyUtils.SetupEditableHandicapWidget(template, slot, client, orderManager, map);
 						LobbyUtils.SetupEditableSpawnWidget(template, slot, client, orderManager, map);
 						LobbyUtils.SetupPlayerActionWidget(template, slot, client, orderManager, worldRenderer,
 							lobby, () => panel = PanelType.Kick, () => panel = PanelType.Players);
@@ -643,6 +650,7 @@ namespace OpenRA.Mods.Common.Widgets.Logic
 					{
 						LobbyUtils.SetupNameWidget(template, slot, client, orderManager, worldRenderer);
 						LobbyUtils.SetupTeamWidget(template, slot, client);
+						LobbyUtils.SetupHandicapWidget(template, slot, client);
 						LobbyUtils.SetupSpawnWidget(template, slot, client);
 					}
 

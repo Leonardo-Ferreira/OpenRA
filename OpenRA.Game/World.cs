@@ -32,6 +32,7 @@ namespace OpenRA
 		readonly List<IEffect> effects = new List<IEffect>();
 		readonly List<IEffect> unpartitionedEffects = new List<IEffect>();
 		readonly List<ISync> syncedEffects = new List<ISync>();
+		readonly GameSettings gameSettings;
 
 		readonly Queue<Action<World>> frameEndActions = new Queue<Action<World>>();
 
@@ -207,27 +208,12 @@ namespace OpenRA
 			Selection = WorldActor.Trait<ISelection>();
 			OrderValidators = WorldActor.TraitsImplementing<IValidateOrder>().ToArray();
 
-			// Reset mask
 			LongBitSet<PlayerBitMask>.Reset();
 
-			// Add players
+			// Create an isolated RNG to simplify synchronization between client and server player faction/spawn assignments
+			var playerRandom = new MersenneTwister(orderManager.LobbyInfo.GlobalSettings.RandomSeed);
 			foreach (var cmp in WorldActor.TraitsImplementing<ICreatePlayers>())
-				cmp.CreatePlayers(this);
-
-			// Set defaults for any unset stances
-			foreach (var p in Players)
-			{
-				if (!p.Spectating)
-					AllPlayersMask = AllPlayersMask.Union(p.PlayerMask);
-
-				foreach (var q in Players)
-				{
-					SetUpPlayerMask(p, q);
-
-					if (!p.Stances.ContainsKey(q))
-						p.Stances[q] = Stance.Neutral;
-				}
-			}
+				cmp.CreatePlayers(this, playerRandom);
 
 			Game.Sound.SoundVolumeModifier = 1.0f;
 
@@ -241,25 +227,7 @@ namespace OpenRA
 			};
 
 			RulesContainTemporaryBlocker = map.Rules.Actors.Any(a => a.Value.HasTraitInfo<ITemporaryBlockerInfo>());
-		}
-
-		void SetUpPlayerMask(Player p, Player q)
-		{
-			if (q.Spectating)
-				return;
-
-			var bitSet = q.PlayerMask;
-
-			switch (p.Stances[q])
-			{
-				case Stance.Enemy:
-				case Stance.Neutral:
-					p.EnemyPlayersMask = p.EnemyPlayersMask.Union(bitSet);
-					break;
-				case Stance.Ally:
-					p.AlliedPlayersMask = p.AlliedPlayersMask.Union(bitSet);
-					break;
-			}
+			gameSettings = Game.Settings.Game;
 		}
 
 		public void AddToMaps(Actor self, IOccupySpace ios)
@@ -314,10 +282,11 @@ namespace OpenRA
 					using (new PerfTimer(iwl.GetType().Name + ".WorldLoaded"))
 						iwl.WorldLoaded(this, wr);
 
-			var assignSpawnLocations = WorldActor.TraitOrDefault<IAssignSpawnPoints>();
 			gameInfo.StartTimeUtc = DateTime.UtcNow;
 			foreach (var player in Players)
 				gameInfo.AddPlayer(player, OrderManager.LobbyInfo);
+
+			gameInfo.DisabledSpawnPoints = OrderManager.LobbyInfo.DisabledSpawnPoints;
 
 			var echo = OrderManager.Connection as EchoConnection;
 			var rc = echo != null ? echo.Recorder : null;
@@ -457,7 +426,9 @@ namespace OpenRA
 				wasLoadingGameSave = false;
 			}
 
-			if (!Paused)
+			// Allow users to pause the shellmap via the settings menu
+			// Some traits initialize important state during the first tick, so we must allow it to tick at least once
+			if (!Paused && (Type != WorldType.Shellmap || !gameSettings.PauseShellmap || WorldTick == 0))
 			{
 				WorldTick++;
 
@@ -465,7 +436,7 @@ namespace OpenRA
 					foreach (var a in actors.Values)
 						a.Tick();
 
-				ActorsWithTrait<ITick>().DoTimed(x => x.Trait.Tick(x.Actor), "Trait");
+				ApplyToActorsWithTraitTimed<ITick>((Actor actor, ITick trait) => trait.Tick(actor), "Trait");
 
 				effects.DoTimed(e => e.Tick(this), "Effect");
 			}
@@ -477,7 +448,7 @@ namespace OpenRA
 		// For things that want to update their render state once per tick, ignoring pause state
 		public void TickRender(WorldRenderer wr)
 		{
-			ActorsWithTrait<ITickRender>().DoTimed(x => x.Trait.TickRender(wr, x.Actor), "Render");
+			ApplyToActorsWithTraitTimed<ITickRender>((Actor actor, ITickRender trait) => trait.TickRender(wr, actor), "Render");
 			ScreenMap.TickRender();
 		}
 
@@ -534,6 +505,11 @@ namespace OpenRA
 		public IEnumerable<TraitPair<T>> ActorsWithTrait<T>()
 		{
 			return TraitDict.ActorsWithTrait<T>();
+		}
+
+		public void ApplyToActorsWithTraitTimed<T>(Action<Actor, T> action, string text)
+		{
+			TraitDict.ApplyToActorsWithTraitTimed<T>(action, text);
 		}
 
 		public IEnumerable<Actor> ActorsHavingTrait<T>()

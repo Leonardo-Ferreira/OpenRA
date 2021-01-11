@@ -1,8 +1,9 @@
 #!/bin/bash
 # OpenRA packaging script for macOS
 #
-# The application bundles will be signed if the following environment variable is defined:
-#   MACOS_DEVELOPER_IDENTITY: Certificate name, of the form `Developer\ ID\ Application:\ <name with escaped spaces>`
+# The application bundles will be signed if the following environment variables are defined:
+#   MACOS_DEVELOPER_IDENTITY: The alphanumeric identifier listed in the certificate name ("Developer ID Application: <your name> (<identity>)")
+#                             or as Team ID in your Apple Developer account Membership Details.
 # If the identity is not already in the default keychain, specify the following environment variables to import it:
 #   MACOS_DEVELOPER_CERTIFICATE_BASE64: base64 content of the exported .p12 developer ID certificate.
 #                                       Generate using `base64 certificate.p12 | pbcopy`
@@ -12,21 +13,23 @@
 #   MACOS_DEVELOPER_USERNAME: Email address for the developer account
 #   MACOS_DEVELOPER_PASSWORD: App-specific password for the developer account
 #
+set -e
 
-MONO_TAG="osx-launcher-20200830"
+MONO_TAG="osx-launcher-20201222"
 
 if [ $# -ne "2" ]; then
 	echo "Usage: $(basename "$0") tag outputdir"
 	exit 1
 fi
 
-if [[ "$OSTYPE" != "darwin"* ]]; then
+if [[ "${OSTYPE}" != "darwin"* ]]; then
 	echo >&2 "macOS packaging requires a macOS host"
 	exit 1
 fi
 
 # Set the working dir to the location of this script
-cd "$(dirname "$0")" || exit 1
+cd "$(dirname "${0}")" || exit 1
+. ../functions.sh
 
 # Import code signing certificate
 if [ -n "${MACOS_DEVELOPER_CERTIFICATE_BASE64}" ] && [ -n "${MACOS_DEVELOPER_CERTIFICATE_PASSWORD}" ] && [ -n "${MACOS_DEVELOPER_IDENTITY}" ]; then
@@ -40,29 +43,46 @@ if [ -n "${MACOS_DEVELOPER_CERTIFICATE_BASE64}" ] && [ -n "${MACOS_DEVELOPER_CER
 	rm -fr build.p12
 fi
 
-TAG="$1"
-OUTPUTDIR="$2"
+TAG="${1}"
+OUTPUTDIR="${2}"
 SRCDIR="$(pwd)/../.."
 BUILTDIR="$(pwd)/build"
 ARTWORK_DIR="$(pwd)/../artwork/"
 
 modify_plist() {
-	sed "s|$1|$2|g" "$3" > "$3.tmp" && mv "$3.tmp" "$3"
+	sed "s|${1}|${2}|g" "${3}" > "${3}.tmp" && mv "${3}.tmp" "${3}"
 }
 
 # Copies the game files and sets metadata
-populate_bundle() {
-	TEMPLATE_DIR="${BUILTDIR}/${1}"
-	MOD_ID=${2}
-	MOD_NAME=${3}
-	DISCORD_APPID=${4}
+build_app() {
+	PLATFORM="${1}"
+	TEMPLATE_DIR="${2}"
+	LAUNCHER_DIR="${3}"
+	MOD_ID="${4}"
+	MOD_NAME="${5}"
+	DISCORD_APPID="${6}"
 
-	cp -r "${BUILTDIR}/OpenRA.app" "${TEMPLATE_DIR}"
+	LAUNCHER_CONTENTS_DIR="${LAUNCHER_DIR}/Contents"
+	LAUNCHER_ASSEMBLY_DIR="${LAUNCHER_CONTENTS_DIR}/MacOS"
+	LAUNCHER_RESOURCES_DIR="${LAUNCHER_CONTENTS_DIR}/Resources"
 
-	# Add mod files
-	pushd "${SRCDIR}" > /dev/null || exit 1
-	cp -r "mods/${MOD_ID}" mods/modcontent "${TEMPLATE_DIR}/Contents/Resources/mods"
-	popd > /dev/null || exit 1
+	cp -r "${TEMPLATE_DIR}" "${LAUNCHER_DIR}"
+
+	IS_D2K="False"
+	if [ "${MOD_ID}" = "d2k" ]; then
+		IS_D2K="True"
+	fi
+
+	# Install engine and mod files
+	if [ "${PLATFORM}" = "compat" ]; then
+		install_assemblies_mono "${SRCDIR}" "${LAUNCHER_ASSEMBLY_DIR}" "osx-x64" "True" "True" "${IS_D2K}"
+	else
+		install_assemblies "${SRCDIR}" "${LAUNCHER_ASSEMBLY_DIR}" "osx-x64" "True" "True" "${IS_D2K}"
+	fi
+
+	install_data "${SRCDIR}" "${LAUNCHER_RESOURCES_DIR}" "${MOD_ID}"
+	set_engine_version "${TAG}" "${LAUNCHER_RESOURCES_DIR}"
+	set_mod_version "${TAG}" "${LAUNCHER_RESOURCES_DIR}/mods/${MOD_ID}/mod.yaml" "${LAUNCHER_RESOURCES_DIR}/mods/modcontent/mod.yaml"
 
 	# Assemble multi-resolution icon
 	mkdir "${MOD_ID}.iconset"
@@ -75,19 +95,18 @@ populate_bundle() {
 	cp "${ARTWORK_DIR}/${MOD_ID}_256x256.png" "${MOD_ID}.iconset/icon_256x256.png"
 	cp "${ARTWORK_DIR}/${MOD_ID}_512x512.png" "${MOD_ID}.iconset/icon_256x256@2x.png"
 	cp "${ARTWORK_DIR}/${MOD_ID}_1024x1024.png" "${MOD_ID}.iconset/icon_512x512@2x.png"
-	iconutil --convert icns "${MOD_ID}.iconset" -o "${TEMPLATE_DIR}/Contents/Resources/${MOD_ID}.icns"
+	iconutil --convert icns "${MOD_ID}.iconset" -o "${LAUNCHER_RESOURCES_DIR}/${MOD_ID}.icns"
 	rm -rf "${MOD_ID}.iconset"
 
-	# Copy macOS specific files
-	modify_plist "{MOD_ID}" "${MOD_ID}" "${TEMPLATE_DIR}/Contents/Info.plist"
-	modify_plist "{MOD_NAME}" "${MOD_NAME}" "${TEMPLATE_DIR}/Contents/Info.plist"
-	modify_plist "{JOIN_SERVER_URL_SCHEME}" "openra-${MOD_ID}-${TAG}" "${TEMPLATE_DIR}/Contents/Info.plist"
-	modify_plist "{DISCORD_URL_SCHEME}" "discord-${DISCORD_APPID}" "${TEMPLATE_DIR}/Contents/Info.plist"
+	# Set launcher metadata
+	modify_plist "{MOD_ID}" "${MOD_ID}" "${LAUNCHER_CONTENTS_DIR}/Info.plist"
+	modify_plist "{MOD_NAME}" "${MOD_NAME}" "${LAUNCHER_CONTENTS_DIR}/Info.plist"
+	modify_plist "{JOIN_SERVER_URL_SCHEME}" "openra-${MOD_ID}-${TAG}" "${LAUNCHER_CONTENTS_DIR}/Info.plist"
+	modify_plist "{DISCORD_URL_SCHEME}" "discord-${DISCORD_APPID}" "${LAUNCHER_CONTENTS_DIR}/Info.plist"
 
 	# Sign binaries with developer certificate
 	if [ -n "${MACOS_DEVELOPER_IDENTITY}" ]; then
-		codesign -s "${MACOS_DEVELOPER_IDENTITY}" --timestamp --options runtime -f --entitlements entitlements.plist "${BUILTDIR}/${1}/Contents/Resources/"*.dylib
-		codesign -s "${MACOS_DEVELOPER_IDENTITY}" --timestamp --options runtime -f --entitlements entitlements.plist --deep "${BUILTDIR}/${1}"
+		codesign -s "${MACOS_DEVELOPER_IDENTITY}" --timestamp --options runtime -f --entitlements entitlements.plist --deep "${LAUNCHER_DIR}"
 	fi
 }
 
@@ -96,47 +115,28 @@ build_platform() {
 	DMG_PATH="${2}"
 	echo "Building launchers (${PLATFORM})"
 
-	mkdir -p "${BUILTDIR}/OpenRA.app/Contents/Resources"
-	mkdir -p "${BUILTDIR}/OpenRA.app/Contents/MacOS"
-	echo "APPL????" > "${BUILTDIR}/OpenRA.app/Contents/PkgInfo"
-	cp Eluant.dll.config "${BUILTDIR}/OpenRA.app/Contents/Resources"
-	cp Info.plist.in "${BUILTDIR}/OpenRA.app/Contents/Info.plist"
-	modify_plist "{DEV_VERSION}" "${TAG}" "${BUILTDIR}/OpenRA.app/Contents/Info.plist"
-	modify_plist "{FAQ_URL}" "http://wiki.openra.net/FAQ" "${BUILTDIR}/OpenRA.app/Contents/Info.plist"
+	# Prepare generic template for the mods to duplicate and customize
+	TEMPLATE_DIR="${BUILTDIR}/template.app"
+	mkdir -p "${TEMPLATE_DIR}/Contents/Resources"
+	mkdir -p "${TEMPLATE_DIR}/Contents/MacOS"
+	echo "APPL????" > "${TEMPLATE_DIR}/Contents/PkgInfo"
+	cp Info.plist.in "${TEMPLATE_DIR}/Contents/Info.plist"
+	modify_plist "{DEV_VERSION}" "${TAG}" "${TEMPLATE_DIR}/Contents/Info.plist"
+	modify_plist "{FAQ_URL}" "http://wiki.openra.net/FAQ" "${TEMPLATE_DIR}/Contents/Info.plist"
 
 	if [ "${PLATFORM}" = "compat" ]; then
-		modify_plist "{MINIMUM_SYSTEM_VERSION}" "10.9" "${BUILTDIR}/OpenRA.app/Contents/Info.plist"
-		clang -m64 launcher-mono.m -o "${BUILTDIR}/OpenRA.app/Contents/MacOS/OpenRA" -framework AppKit -mmacosx-version-min=10.9
+		modify_plist "{MINIMUM_SYSTEM_VERSION}" "10.9" "${TEMPLATE_DIR}/Contents/Info.plist"
+		clang -m64 launcher-mono.m -o "${TEMPLATE_DIR}/Contents/MacOS/Launcher" -framework AppKit -mmacosx-version-min=10.9
 	else
-		modify_plist "{MINIMUM_SYSTEM_VERSION}" "10.13" "${BUILTDIR}/OpenRA.app/Contents/Info.plist"
-		clang -m64 launcher.m -o "${BUILTDIR}/OpenRA.app/Contents/MacOS/OpenRA" -framework AppKit -mmacosx-version-min=10.13
-
-		curl -s -L -O https://github.com/OpenRA/OpenRALauncherOSX/releases/download/${MONO_TAG}/mono.zip || exit 3
-		unzip -qq -d "${BUILTDIR}/mono" mono.zip
-		mv "${BUILTDIR}/mono/mono" "${BUILTDIR}/OpenRA.app/Contents/MacOS/"
-		mv "${BUILTDIR}/mono/etc" "${BUILTDIR}/OpenRA.app/Contents/Resources"
-		mv "${BUILTDIR}/mono/lib" "${BUILTDIR}/OpenRA.app/Contents/Resources"
-		rm mono.zip
-		rmdir "${BUILTDIR}/mono"
+		modify_plist "{MINIMUM_SYSTEM_VERSION}" "10.13" "${TEMPLATE_DIR}/Contents/Info.plist"
+		clang -m64 launcher.m -o "${TEMPLATE_DIR}/Contents/MacOS/Launcher" -framework AppKit -mmacosx-version-min=10.13
 	fi
 
-	echo "Building core files"
+	build_app "${PLATFORM}" "${TEMPLATE_DIR}" "${BUILTDIR}/OpenRA - Red Alert.app" "ra" "Red Alert" "699222659766026240"
+	build_app "${PLATFORM}" "${TEMPLATE_DIR}" "${BUILTDIR}/OpenRA - Tiberian Dawn.app" "cnc" "Tiberian Dawn" "699223250181292033"
+	build_app "${PLATFORM}" "${TEMPLATE_DIR}" "${BUILTDIR}/OpenRA - Dune 2000.app" "d2k" "Dune 2000" "712711732770111550"
 
-	pushd "${SRCDIR}" > /dev/null || exit 1
-	make clean
-	make core TARGETPLATFORM=osx-x64
-	make version VERSION="${TAG}"
-
-	make install-engine gameinstalldir="/Contents/Resources/" DESTDIR="${BUILTDIR}/OpenRA.app"
-	make install-common-mod-files gameinstalldir="/Contents/Resources/" DESTDIR="${BUILTDIR}/OpenRA.app"
-	make install-dependencies TARGETPLATFORM=osx-x64 gameinstalldir="/Contents/Resources/" DESTDIR="${BUILTDIR}/OpenRA.app"
-	popd > /dev/null || exit 1
-
-	populate_bundle "OpenRA - Red Alert.app" "ra" "Red Alert" "699222659766026240"
-	populate_bundle "OpenRA - Tiberian Dawn.app" "cnc" "Tiberian Dawn" "699223250181292033"
-	populate_bundle "OpenRA - Dune 2000.app" "d2k" "Dune 2000" "712711732770111550"
-
-	rm -rf "${BUILTDIR}/OpenRA.app"
+	rm -rf "${TEMPLATE_DIR}"
 
 	echo "Packaging disk image"
 	hdiutil create "${DMG_PATH}" -format UDRW -volname "OpenRA" -fs HFS+ -srcfolder build
@@ -181,6 +181,25 @@ build_platform() {
 	SetFile -c icnC "/Volumes/OpenRA/.VolumeIcon.icns"
 	SetFile -a C "/Volumes/OpenRA"
 
+	# Replace duplicate .NET runtime files with hard links to improve compression
+	if [ "${PLATFORM}" != "compat" ]; then
+		OIFS="$IFS"
+		IFS=$'\n'
+		for MOD in "Red Alert" "Tiberian Dawn"; do
+			for f in $(find /Volumes/OpenRA/OpenRA\ -\ ${MOD}.app/Contents/MacOS/*); do
+				g="/Volumes/OpenRA/OpenRA - Dune 2000.app/Contents/MacOS/"$(basename "${f}")
+				hashf=$(shasum "${f}" | awk '{ print $1 }')
+				hashg=$(shasum "${g}" | awk '{ print $1 }')
+				if [ "${hashf}" = "${hashg}" ]; then
+					echo "Deduplicating ${f}"
+					rm "${f}"
+					ln "${g}" "${f}"
+				fi
+			done
+		done
+		IFS="$OIFS"
+	fi
+
 	chmod -Rf go-w /Volumes/OpenRA
 	sync
 	sync
@@ -192,13 +211,13 @@ build_platform() {
 notarize_package() {
 	DMG_PATH="${1}"
 	NOTARIZE_DMG_PATH="${DMG_PATH%.*}"-notarization.dmg
-	echo "Submitting ${PACKAGE_NAME} for notarization"
+	echo "Submitting ${DMG_PATH} for notarization"
 
 	# Reset xcode search path to fix xcrun not finding altool
 	sudo xcode-select -r
 
 	# Create a temporary read-only dmg for submission (notarization service rejects read/write images)
-	hdiutil convert "${DMG_PATH}" -format UDZO -imagekey zlib-level=9 -ov -o "${NOTARIZE_DMG_PATH}"
+	hdiutil convert "${DMG_PATH}" -format ULFO -ov -o "${NOTARIZE_DMG_PATH}"
 
 	NOTARIZATION_UUID=$(xcrun altool --notarize-app --primary-bundle-id "net.openra.packaging" -u "${MACOS_DEVELOPER_USERNAME}" -p "${MACOS_DEVELOPER_PASSWORD}" --file "${NOTARIZE_DMG_PATH}" 2>&1 | awk -F' = ' '/RequestUUID/ { print $2; exit }')
 	if [ -z "${NOTARIZATION_UUID}" ]; then
@@ -240,10 +259,17 @@ notarize_package() {
 }
 
 finalize_package() {
-	INPUT_PATH="${1}"
-	OUTPUT_PATH="${2}"
+	PLATFORM="${1}"
+	INPUT_PATH="${2}"
+	OUTPUT_PATH="${3}"
 
-	hdiutil convert "${INPUT_PATH}" -format UDZO -imagekey zlib-level=9 -ov -o "${OUTPUT_PATH}"
+	if [ "${PLATFORM}" = "compat" ]; then
+		hdiutil convert "${INPUT_PATH}" -format UDZO -imagekey zlib-level=9 -ov -o "${OUTPUT_PATH}"
+	else
+		# ULFO offers better compression and faster decompression speeds, but is only supported by 10.11+
+		hdiutil convert "${INPUT_PATH}" -format ULFO -ov -o "${OUTPUT_PATH}"
+	fi
+
 	rm "${INPUT_PATH}"
 }
 
@@ -261,5 +287,5 @@ if [ -n "${MACOS_DEVELOPER_USERNAME}" ] && [ -n "${MACOS_DEVELOPER_PASSWORD}" ];
 	wait
 fi
 
-finalize_package "build.dmg" "${OUTPUTDIR}/OpenRA-${TAG}.dmg"
-finalize_package "build-compat.dmg" "${OUTPUTDIR}/OpenRA-${TAG}-compat.dmg"
+finalize_package "standard" "build.dmg" "${OUTPUTDIR}/OpenRA-${TAG}.dmg"
+finalize_package "compat" "build-compat.dmg" "${OUTPUTDIR}/OpenRA-${TAG}-compat.dmg"

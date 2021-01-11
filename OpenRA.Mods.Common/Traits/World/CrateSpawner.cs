@@ -20,11 +20,9 @@ namespace OpenRA.Mods.Common.Traits
 {
 	public class CrateSpawnerInfo : TraitInfo, ILobbyOptions
 	{
-		[Translate]
 		[Desc("Descriptive label for the crates checkbox in the lobby.")]
 		public readonly string CheckboxLabel = "Crates";
 
-		[Translate]
 		[Desc("Tooltip description for the crates checkbox in the lobby.")]
 		public readonly string CheckboxDescription = "Collect crates with units to receive random bonuses or penalties";
 
@@ -180,8 +178,7 @@ namespace OpenRA.Mods.Common.Traits
 					continue;
 
 				// Don't drop on any actors
-				if (self.World.WorldActor.Trait<BuildingInfluence>().GetBuildingAt(p) != null
-					|| self.World.ActorMap.GetActorsAt(p).Any())
+				if (self.World.ActorMap.GetActorsAt(p).Any())
 					continue;
 
 				return p;

@@ -13,6 +13,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using OpenRA.Mods.Common.Traits;
+using OpenRA.Mods.Common.Widgets.Logic;
 using OpenRA.Network;
 using OpenRA.Primitives;
 using OpenRA.Server;
@@ -42,7 +43,9 @@ namespace OpenRA.Mods.Common.Server
 			{ "name", Name },
 			{ "faction", Faction },
 			{ "team", Team },
+			{ "handicap", Handicap },
 			{ "spawn", Spawn },
+			{ "clear_spawn", ClearPlayerSpawn },
 			{ "color", PlayerColor },
 			{ "sync_lobby", SyncLobby }
 		};
@@ -123,6 +126,9 @@ namespace OpenRA.Mods.Common.Server
 				if (server.LobbyInfo.Slots.Any(sl => sl.Value.Required && server.LobbyInfo.ClientInSlot(sl.Key) == null))
 					return;
 
+				if (LobbyUtils.InsufficientEnabledSpawnPoints(server.Map, server.LobbyInfo))
+					return;
+
 				server.StartGame();
 			}
 		}
@@ -167,6 +173,12 @@ namespace OpenRA.Mods.Common.Server
 				if (!server.LobbyInfo.GlobalSettings.EnableSingleplayer && server.LobbyInfo.NonBotPlayers.Count() < 2)
 				{
 					server.SendOrderTo(conn, "Message", server.TwoHumansRequiredText);
+					return true;
+				}
+
+				if (LobbyUtils.InsufficientEnabledSpawnPoints(server.Map, server.LobbyInfo))
+				{
+					server.SendOrderTo(conn, "Message", "Unable to start the game until more spawn points are enabled.");
 					return true;
 				}
 
@@ -234,6 +246,7 @@ namespace OpenRA.Mods.Common.Server
 					client.Slot = null;
 					client.SpawnPoint = 0;
 					client.Team = 0;
+					client.Handicap = 0;
 					client.Color = Color.White;
 					server.SyncLobbyClients();
 					CheckAutoStart(server);
@@ -366,14 +379,14 @@ namespace OpenRA.Mods.Common.Server
 						Faction = "Random",
 						SpawnPoint = 0,
 						Team = 0,
+						Handicap = 0,
 						State = Session.ClientState.NotReady,
 						BotControllerClientIndex = controllerClientIndex
 					};
 
 					// Pick a random color for the bot
 					var validator = server.ModData.Manifest.Get<ColorValidator>();
-					var tileset = server.Map.Rules.TileSet;
-					var terrainColors = tileset.TerrainInfo.Where(ti => ti.RestrictPlayerColor).Select(ti => ti.Color);
+					var terrainColors = server.Map.Rules.TerrainInfo.RestrictedPlayerColors;
 					var playerColors = server.LobbyInfo.Clients.Select(c => c.Color)
 						.Concat(server.Map.Players.Players.Values.Select(p => p.Color));
 					bot.Color = bot.PreferredColor = validator.RandomPresetColor(server.Random, terrainColors, playerColors);
@@ -472,6 +485,8 @@ namespace OpenRA.Mods.Common.Server
 						foreach (var c in server.LobbyInfo.Clients)
 							if (c.Slot != null && !server.LobbyInfo.Slots[c.Slot].LockColor)
 								c.Color = c.PreferredColor = SanitizePlayerColor(server, c.Color, c.Index, conn);
+
+						server.LobbyInfo.DisabledSpawnPoints.Clear();
 
 						server.SyncLobbyInfo();
 
@@ -723,6 +738,7 @@ namespace OpenRA.Mods.Common.Server
 				targetClient.Slot = null;
 				targetClient.SpawnPoint = 0;
 				targetClient.Team = 0;
+				targetClient.Handicap = 0;
 				targetClient.Color = Color.White;
 				targetClient.State = Session.ClientState.NotReady;
 				server.SendMessage("{0} moved {1} to spectators.".F(client.Name, targetClient.Name));
@@ -809,6 +825,81 @@ namespace OpenRA.Mods.Common.Server
 
 				return true;
 			}
+		}
+
+		static bool Handicap(S server, Connection conn, Session.Client client, string s)
+		{
+			lock (server.LobbyInfo)
+			{
+				var parts = s.Split(' ');
+				var targetClient = server.LobbyInfo.ClientWithIndex(Exts.ParseIntegerInvariant(parts[0]));
+
+				// Only the host can change other client's info
+				if (targetClient.Index != client.Index && !client.IsAdmin)
+					return true;
+
+				// Map has disabled handicap changes
+				if (server.LobbyInfo.Slots[targetClient.Slot].LockHandicap)
+					return true;
+
+				if (!Exts.TryParseIntegerInvariant(parts[1], out var handicap))
+				{
+					Log.Write("server", "Invalid handicap: {0}", s);
+					return false;
+				}
+
+				// Handicaps may be set between 0 - 95% in steps of 5%
+				var options = Enumerable.Range(0, 20).Select(i => 5 * i);
+				if (!options.Contains(handicap))
+				{
+					Log.Write("server", "Invalid handicap: {0}", s);
+					return false;
+				}
+
+				targetClient.Handicap = handicap;
+				server.SyncLobbyClients();
+
+				return true;
+			}
+		}
+
+		static bool ClearPlayerSpawn(S server, Connection conn, Session.Client client, string s)
+		{
+			var spawnPoint = Exts.ParseIntegerInvariant(s);
+			if (spawnPoint == 0)
+				return true;
+
+			var existingClient = server.LobbyInfo.Clients.FirstOrDefault(cc => cc.SpawnPoint == spawnPoint);
+			if (client != existingClient && !client.IsAdmin)
+			{
+				server.SendOrderTo(conn, "Message", "Only admins can clear spawn points.");
+				return true;
+			}
+
+			// Clearing a selected spawn point removes the player
+			if (existingClient != null)
+			{
+				// Prevent a map-defined lock spawn from being affected
+				if (existingClient.Slot != null && server.LobbyInfo.Slots[existingClient.Slot].LockSpawn)
+					return true;
+
+				existingClient.SpawnPoint = 0;
+				if (existingClient.State == Session.ClientState.Ready)
+					existingClient.State = Session.ClientState.NotReady;
+
+				server.SyncLobbyClients();
+				return true;
+			}
+
+			// Clearing an empty spawn point prevents it from being selected
+			// Clearing a disabled spawn restores it for use
+			if (!server.LobbyInfo.DisabledSpawnPoints.Contains(spawnPoint))
+				server.LobbyInfo.DisabledSpawnPoints.Add(spawnPoint);
+			else
+				server.LobbyInfo.DisabledSpawnPoints.Remove(spawnPoint);
+
+			server.SyncLobbyInfo();
+			return true;
 		}
 
 		static bool Spawn(S server, Connection conn, Session.Client client, string s)
@@ -951,6 +1042,7 @@ namespace OpenRA.Mods.Common.Server
 				LockFaction = pr.LockFaction,
 				LockColor = pr.LockColor,
 				LockTeam = pr.LockTeam,
+				LockHandicap = pr.LockHandicap,
 				LockSpawn = pr.LockSpawn,
 				Required = pr.Required,
 			};
@@ -1012,8 +1104,7 @@ namespace OpenRA.Mods.Common.Server
 						server.SendOrderTo(connectionToEcho, "Message", message);
 				};
 
-				var tileset = server.Map.Rules.TileSet;
-				var terrainColors = tileset.TerrainInfo.Where(ti => ti.RestrictPlayerColor).Select(ti => ti.Color).ToList();
+				var terrainColors = server.Map.Rules.TerrainInfo.RestrictedPlayerColors;
 				var playerColors = server.LobbyInfo.Clients.Where(c => c.Index != playerIndex).Select(c => c.Color)
 					.Concat(server.Map.Players.Players.Values.Select(p => p.Color)).ToList();
 

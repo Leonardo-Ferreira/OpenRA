@@ -161,10 +161,10 @@ namespace OpenRA.Mods.Common.Traits
 			sharesCell = info.SharesCell;
 			world = self.World;
 
-			var tileSet = world.Map.Rules.TileSet;
-			terrainInfos = new LocomotorInfo.TerrainInfo[tileSet.TerrainInfo.Length];
+			var terrainInfo = world.Map.Rules.TerrainInfo;
+			terrainInfos = new LocomotorInfo.TerrainInfo[terrainInfo.TerrainTypes.Length];
 			for (var i = 0; i < terrainInfos.Length; i++)
-				if (!info.TerrainSpeeds.TryGetValue(tileSet.TerrainInfo[i].Type, out terrainInfos[i]))
+				if (!info.TerrainSpeeds.TryGetValue(terrainInfo.TerrainTypes[i].Type, out terrainInfos[i]))
 					terrainInfos[i] = LocomotorInfo.TerrainInfo.Impassable;
 
 			MovementClass = (uint)terrainInfos.Select(ti => ti.Cost < short.MaxValue).ToBits();
@@ -301,7 +301,7 @@ namespace OpenRA.Mods.Common.Traits
 
 			// If the check allows: We are not blocked by units that we can force to move out of the way.
 			if (check <= BlockedByActor.Immovable && cellFlag.HasCellFlag(CellFlag.HasMovableActor) &&
-				actor.Owner.Stances[otherActor.Owner] == Stance.Ally)
+				actor.Owner.RelationshipWith(otherActor.Owner) == PlayerRelationship.Ally)
 			{
 				var mobile = otherActor.OccupiesSpace as Mobile;
 				if (mobile != null && !mobile.IsTraitDisabled && !mobile.IsTraitPaused && !mobile.IsImmovable)

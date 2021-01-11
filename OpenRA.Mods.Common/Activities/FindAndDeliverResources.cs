@@ -177,13 +177,8 @@ namespace OpenRA.Mods.Common.Activities
 
 			// Determine where to search from and how far to search:
 			var procLoc = GetSearchFromProcLocation(self);
-			var searchFromLoc = lastHarvestedCell ?? procLoc;
+			var searchFromLoc = lastHarvestedCell ?? procLoc ?? self.Location;
 			var searchRadius = lastHarvestedCell.HasValue ? harvInfo.SearchFromHarvesterRadius : harvInfo.SearchFromProcRadius;
-			if (!searchFromLoc.HasValue)
-			{
-				searchFromLoc = self.Location;
-				searchRadius = harvInfo.SearchFromHarvesterRadius;
-			}
 
 			var searchRadiusSquared = searchRadius * searchRadius;
 
@@ -196,7 +191,7 @@ namespace OpenRA.Mods.Common.Activities
 					domainIndex.IsPassable(self.Location, loc, mobile.Locomotor) && harv.CanHarvestCell(self, loc) && claimLayer.CanClaimCell(self, loc))
 				.WithCustomCost(loc =>
 				{
-					if ((loc - searchFromLoc.Value).LengthSquared > searchRadiusSquared)
+					if ((loc - searchFromLoc).LengthSquared > searchRadiusSquared)
 						return int.MaxValue;
 
 					// Add a cost modifier to harvestable cells to prefer resources that are closer to the refinery.
@@ -221,7 +216,7 @@ namespace OpenRA.Mods.Common.Activities
 
 					return 0;
 				})
-				.FromPoint(searchFromLoc.Value)
+				.FromPoint(searchFromLoc)
 				.FromPoint(self.Location))
 				path = pathFinder.FindPath(search);
 
@@ -243,9 +238,9 @@ namespace OpenRA.Mods.Common.Activities
 					yield return n;
 
 			if (orderLocation != null)
-				yield return new TargetLineNode(Target.FromCell(self.World, orderLocation.Value), Color.Crimson);
+				yield return new TargetLineNode(Target.FromCell(self.World, orderLocation.Value), harvInfo.HarvestLineColor);
 			else if (deliverActor != null)
-				yield return new TargetLineNode(Target.FromActor(deliverActor), Color.Green);
+				yield return new TargetLineNode(Target.FromActor(deliverActor), harvInfo.DeliverLineColor);
 		}
 
 		CPos? GetSearchFromProcLocation(Actor self)

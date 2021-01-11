@@ -167,7 +167,7 @@ namespace OpenRA.Mods.Common.Traits
 
 			foreach (var bp in world.ActorsWithTrait<BaseProvider>())
 			{
-				var validOwner = bp.Actor.Owner == p || (allyBuildEnabled && bp.Actor.Owner.Stances[p] == Stance.Ally);
+				var validOwner = bp.Actor.Owner == p || (allyBuildEnabled && bp.Actor.Owner.RelationshipWith(p) == PlayerRelationship.Ally);
 				if (!validOwner || !bp.Trait.Ready())
 					continue;
 
@@ -212,20 +212,19 @@ namespace OpenRA.Mods.Common.Traits
 				for (var x = scanStart.X; x < scanEnd.X; x++)
 				{
 					var pos = new CPos(x, y);
-
 					var buildingAtPos = bi.GetBuildingAt(pos);
 
 					if (buildingAtPos == null)
 					{
 						var unitsAtPos = world.ActorMap.GetActorsAt(pos).Where(a => a.IsInWorld
-							&& (a.Owner == p || (allyBuildEnabled && a.Owner.Stances[p] == Stance.Ally))
+							&& (a.Owner == p || (allyBuildEnabled && a.Owner.RelationshipWith(p) == PlayerRelationship.Ally))
 							&& ActorGrantsValidArea(a, requiresBuildableArea));
 
 						if (unitsAtPos.Any())
 							nearnessCandidates.Add(pos);
 					}
 					else if (buildingAtPos.IsInWorld && ActorGrantsValidArea(buildingAtPos, requiresBuildableArea)
-						&& (buildingAtPos.Owner == p || (allyBuildEnabled && buildingAtPos.Owner.Stances[p] == Stance.Ally)))
+						&& (buildingAtPos.Owner == p || (allyBuildEnabled && buildingAtPos.Owner.RelationshipWith(p) == PlayerRelationship.Ally)))
 						nearnessCandidates.Add(pos);
 				}
 			}

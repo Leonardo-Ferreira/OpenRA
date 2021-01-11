@@ -101,7 +101,7 @@
 
 ^EmpVisualEffects:
 	WithColoredOverlay@EMPDISABLE:
-		Palette: disabled
+		Color: 000000B4
 	WithIdleOverlay@EMPDISABLE:
 		Sequence: emp-overlay
 		Palette: effect
@@ -182,6 +182,11 @@
 		RequiresCondition: stance-attackanything || assault-move
 	AttackMove:
 		AssaultMoveCondition: assault-move
+
+^PlayerHandicaps:
+	HandicapFirepowerMultiplier:
+	HandicapDamageMultiplier:
+	HandicapProductionTimeMultiplier:
 
 ^2x1Shape:
 	HitShape:
@@ -302,6 +307,7 @@
 	Inherits@2: ^SpriteActor
 	Inherits@3: ^Cloakable
 	Inherits@selection: ^SelectableBuilding
+	Inherits@handicaps: ^PlayerHandicaps
 	Huntable:
 	Targetable:
 		TargetTypes: Ground, Building, C4
@@ -538,6 +544,7 @@
 	Inherits@4: ^Cloakable
 	Inherits@CRATESTATS: ^CrateStatModifiers
 	Inherits@selection: ^SelectableCombatUnit
+	Inherits@handicaps: ^PlayerHandicaps
 	Huntable:
 	OwnerLostAction:
 		Action: Kill
@@ -754,6 +761,7 @@
 	Inherits@5: ^DamagedByVeins
 	Inherits@CRATESTATS: ^CrateStatModifiers
 	Inherits@selection: ^SelectableCombatUnit
+	Inherits@handicaps: ^PlayerHandicaps
 	Huntable:
 	OwnerLostAction:
 		Action: Kill
@@ -860,6 +868,7 @@
 	Inherits@2: ^ExistsInWorld
 	Inherits@3: ^Cloakable
 	Inherits@selection: ^SelectableCombatUnit
+	Inherits@handicaps: ^PlayerHandicaps
 	Huntable:
 	OwnerLostAction:
 		Action: Kill
@@ -942,7 +951,7 @@
 		Type: Heavy
 	HiddenUnderFog:
 		Type: GroundPosition
-		AlwaysVisibleStances: None
+		AlwaysVisibleRelationships: None
 	ScriptTriggers:
 	Interactable:
 	Tooltip:
@@ -958,6 +967,7 @@
 	Inherits@2: ^SpriteActor
 	Inherits@3: ^HealsOnTiberium
 	Inherits@selection: ^SelectableCombatUnit
+	Inherits@handicaps: ^PlayerHandicaps
 	Huntable:
 	Health:
 	Armor:
@@ -1108,6 +1118,7 @@
 	Inherits@2: ^ExistsInWorld
 	Inherits@3: ^Cloakable
 	Inherits@selection: ^SelectableCombatUnit
+	Inherits@handicaps: ^PlayerHandicaps
 	Huntable:
 	RenderVoxels:
 	RenderSprites:
@@ -1284,7 +1295,7 @@
 ^DisableOnLowPower:
 	WithColoredOverlay@IDISABLE:
 		RequiresCondition: disabled
-		Palette: disabled
+		Color: 000000B4
 	GrantConditionOnPowerState@LOWPOWER:
 		Condition: lowpower
 		ValidPowerStates: Low, Critical
@@ -1295,7 +1306,7 @@
 ^DisableOnPowerDown:
 	WithColoredOverlay@IDISABLE:
 		RequiresCondition: disabled
-		Palette: disabled
+		Color: 000000B4
 	GrantCondition@IDISABLE:
 		RequiresCondition: powerdown
 		Condition: disabled

@@ -93,6 +93,8 @@ namespace OpenRA.Server
 				c.SpawnPoint = pr.Spawn;
 			if (pr.LockTeam)
 				c.Team = pr.Team;
+			if (pr.LockHandicap)
+				c.Team = pr.Handicap;
 
 			c.Color = pr.LockColor ? pr.Color : c.PreferredColor;
 		}
@@ -437,6 +439,7 @@ namespace OpenRA.Server
 					Faction = "Random",
 					SpawnPoint = 0,
 					Team = 0,
+					Handicap = 0,
 					State = Session.ClientState.Invalid,
 				};
 
@@ -531,7 +534,7 @@ namespace OpenRA.Server
 
 						if (Type == ServerType.Dedicated)
 						{
-							var motdFile = Platform.ResolvePath(Platform.SupportDirPrefix, "motd.txt");
+							var motdFile = Path.Combine(Platform.SupportDir, "motd.txt");
 							if (!File.Exists(motdFile))
 								File.WriteAllText(motdFile, "Welcome, have fun and good luck!");
 
@@ -660,16 +663,28 @@ namespace OpenRA.Server
 			}
 		}
 
-		void DispatchOrdersToClient(Connection c, int client, int frame, byte[] data)
+		byte[] CreateFrame(int client, int frame, byte[] data)
 		{
-			try
+			using (var ms = new MemoryStream(data.Length + 12))
 			{
-				var ms = new MemoryStream(data.Length + 12);
 				ms.WriteArray(BitConverter.GetBytes(data.Length + 4));
 				ms.WriteArray(BitConverter.GetBytes(client));
 				ms.WriteArray(BitConverter.GetBytes(frame));
 				ms.WriteArray(data);
-				SendData(c.Socket, ms.ToArray());
+				return ms.GetBuffer();
+			}
+		}
+
+		void DispatchOrdersToClient(Connection c, int client, int frame, byte[] data)
+		{
+			DispatchFrameToClient(c, client, CreateFrame(client, frame, data));
+		}
+
+		void DispatchFrameToClient(Connection c, int client, byte[] frameData)
+		{
+			try
+			{
+				SendData(c.Socket, frameData);
 			}
 			catch (Exception e)
 			{
@@ -777,8 +792,9 @@ namespace OpenRA.Server
 		public void DispatchOrdersToClients(Connection conn, int frame, byte[] data)
 		{
 			var from = conn != null ? conn.PlayerIndex : 0;
+			var frameData = CreateFrame(from, frame, data);
 			foreach (var c in Conns.Except(conn).ToList())
-				DispatchOrdersToClient(c, from, frame, data);
+				DispatchFrameToClient(c, from, frameData);
 
 			if (recorder != null)
 			{
@@ -930,8 +946,8 @@ namespace OpenRA.Server
 								while ((invalidIndex = filename.IndexOfAny(invalidChars)) != -1)
 									filename = filename.Remove(invalidIndex, 1);
 
-								var baseSavePath = Platform.ResolvePath(
-									Platform.SupportDirPrefix,
+								var baseSavePath = Path.Combine(
+									Platform.SupportDir,
 									"Saves",
 									ModData.Manifest.Id,
 									ModData.Manifest.Metadata.Version);
@@ -958,8 +974,8 @@ namespace OpenRA.Server
 							while ((invalidIndex = filename.IndexOfAny(invalidChars)) != -1)
 								filename = filename.Remove(invalidIndex, 1);
 
-							var savePath = Platform.ResolvePath(
-								Platform.SupportDirPrefix,
+							var savePath = Path.Combine(
+								Platform.SupportDir,
 								"Saves",
 								ModData.Manifest.Id,
 								ModData.Manifest.Metadata.Version,
@@ -1203,8 +1219,9 @@ namespace OpenRA.Server
 				// HACK: NonCombatant and non-Playable players are set to null to simplify replay tracking
 				// The null padding is needed to keep the player indexes in sync with world.Players on the clients
 				// This will need to change if future code wants to use worldPlayers for other purposes
+				var playerRandom = new MersenneTwister(LobbyInfo.GlobalSettings.RandomSeed);
 				foreach (var cmpi in Map.Rules.Actors["world"].TraitInfos<ICreatePlayersInfo>())
-					cmpi.CreateServerPlayers(Map, LobbyInfo, worldPlayers);
+					cmpi.CreateServerPlayers(Map, LobbyInfo, worldPlayers, playerRandom);
 
 				if (recorder != null)
 				{

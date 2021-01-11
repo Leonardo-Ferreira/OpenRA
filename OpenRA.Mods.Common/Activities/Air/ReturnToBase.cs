@@ -110,7 +110,7 @@ namespace OpenRA.Mods.Common.Activities
 
 			if (ShouldLandAtBuilding(self, dest))
 			{
-				var exit = dest.FirstExitOrDefault();
+				var exit = dest.NearestExitOrDefault(self.CenterPosition);
 				var offset = WVec.Zero;
 				if (exit != null)
 				{
@@ -131,7 +131,7 @@ namespace OpenRA.Mods.Common.Activities
 		public override IEnumerable<TargetLineNode> TargetLineNodes(Actor self)
 		{
 			if (ChildActivity == null)
-				yield return new TargetLineNode(Target.FromActor(dest), Color.Green);
+				yield return new TargetLineNode(Target.FromActor(dest), aircraft.Info.TargetLineColor);
 			else
 				foreach (var n in ChildActivity.TargetLineNodes(self))
 					yield return n;

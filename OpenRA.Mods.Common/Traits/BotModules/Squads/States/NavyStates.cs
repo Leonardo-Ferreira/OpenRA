@@ -78,8 +78,7 @@ namespace OpenRA.Mods.Common.Traits.BotModules.Squads
 
 			if (AttackOrFleeFuzzy.Default.CanAttack(owner.Units, enemyUnits))
 			{
-				foreach (var u in owner.Units)
-					owner.Bot.QueueOrder(new Order("AttackMove", u, Target.FromCell(owner.World, owner.TargetActor.Location), false));
+				owner.Bot.QueueOrder(new Order("AttackMove", null, Target.FromCell(owner.World, owner.TargetActor.Location), false, groupedActors: owner.Units.ToArray()));
 
 				// We have gathered sufficient units. Attack the nearest enemy unit.
 				owner.FuzzyStateMachine.ChangeState(owner, new NavyUnitsAttackMoveState(), true);
@@ -93,6 +92,10 @@ namespace OpenRA.Mods.Common.Traits.BotModules.Squads
 
 	class NavyUnitsAttackMoveState : NavyStateBase, IState
 	{
+		int lastUpdatedTick;
+		CPos? lastLeaderLocation;
+		Actor lastTarget;
+
 		public void Activate(Squad owner) { }
 
 		public void Tick(Squad owner)
@@ -116,6 +119,27 @@ namespace OpenRA.Mods.Common.Traits.BotModules.Squads
 			if (leader == null)
 				return;
 
+			if (leader.Location != lastLeaderLocation)
+			{
+				lastLeaderLocation = leader.Location;
+				lastUpdatedTick = owner.World.WorldTick;
+			}
+
+			if (owner.TargetActor != lastTarget)
+			{
+				lastTarget = owner.TargetActor;
+				lastUpdatedTick = owner.World.WorldTick;
+			}
+
+			// HACK: Drop back to the idle state if we haven't moved in 2.5 seconds
+			// This works around the squad being stuck trying to attack-move to a location
+			// that they cannot path to, generating expensive pathfinding calls each tick.
+			if (owner.World.WorldTick > lastUpdatedTick + 63)
+			{
+				owner.FuzzyStateMachine.ChangeState(owner, new NavyUnitsIdleState(), true);
+				return;
+			}
+
 			var ownUnits = owner.World.FindActorsInCircle(leader.CenterPosition, WDist.FromCells(owner.Units.Count) / 3)
 				.Where(a => a.Owner == owner.Units.First().Owner && owner.Units.Contains(a)).ToHashSet();
 
@@ -124,8 +148,9 @@ namespace OpenRA.Mods.Common.Traits.BotModules.Squads
 				// Since units have different movement speeds, they get separated while approaching the target.
 				// Let them regroup into tighter formation.
 				owner.Bot.QueueOrder(new Order("Stop", leader, false));
-				foreach (var unit in owner.Units.Where(a => !ownUnits.Contains(a)))
-					owner.Bot.QueueOrder(new Order("AttackMove", unit, Target.FromCell(owner.World, leader.Location), false));
+
+				var units = owner.Units.Where(a => !ownUnits.Contains(a)).ToArray();
+				owner.Bot.QueueOrder(new Order("AttackMove", null, Target.FromCell(owner.World, leader.Location), false, groupedActors: units));
 			}
 			else
 			{
@@ -138,8 +163,7 @@ namespace OpenRA.Mods.Common.Traits.BotModules.Squads
 					owner.FuzzyStateMachine.ChangeState(owner, new NavyUnitsAttackState(), true);
 				}
 				else
-					foreach (var a in owner.Units)
-						owner.Bot.QueueOrder(new Order("AttackMove", a, Target.FromCell(owner.World, owner.TargetActor.Location), false));
+					owner.Bot.QueueOrder(new Order("AttackMove", null, Target.FromCell(owner.World, owner.TargetActor.Location), false, groupedActors: owner.Units.ToArray()));
 			}
 
 			if (ShouldFlee(owner))
@@ -151,6 +175,10 @@ namespace OpenRA.Mods.Common.Traits.BotModules.Squads
 
 	class NavyUnitsAttackState : NavyStateBase, IState
 	{
+		int lastUpdatedTick;
+		CPos? lastLeaderLocation;
+		Actor lastTarget;
+
 		public void Activate(Squad owner) { }
 
 		public void Tick(Squad owner)
@@ -168,6 +196,28 @@ namespace OpenRA.Mods.Common.Traits.BotModules.Squads
 					owner.FuzzyStateMachine.ChangeState(owner, new NavyUnitsFleeState(), true);
 					return;
 				}
+			}
+
+			var leader = owner.Units.ClosestTo(owner.TargetActor.CenterPosition);
+			if (leader.Location != lastLeaderLocation)
+			{
+				lastLeaderLocation = leader.Location;
+				lastUpdatedTick = owner.World.WorldTick;
+			}
+
+			if (owner.TargetActor != lastTarget)
+			{
+				lastTarget = owner.TargetActor;
+				lastUpdatedTick = owner.World.WorldTick;
+			}
+
+			// HACK: Drop back to the idle state if we haven't moved in 2.5 seconds
+			// This works around the squad being stuck trying to attack-move to a location
+			// that they cannot path to, generating expensive pathfinding calls each tick.
+			if (owner.World.WorldTick > lastUpdatedTick + 63)
+			{
+				owner.FuzzyStateMachine.ChangeState(owner, new NavyUnitsIdleState(), true);
+				return;
 			}
 
 			foreach (var a in owner.Units)

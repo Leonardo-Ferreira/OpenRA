@@ -22,8 +22,10 @@ namespace OpenRA.Mods.Common.Lint
 		public void Run(Action<string> emitError, Action<string> emitWarning, ModData modData, Map map)
 		{
 			var players = new MapPlayers(map.PlayerDefinitions).Players;
-			var worldOwnerFound = false;
+			if (players.Count > 64)
+				emitError("Defining more than 64 players is not allowed.");
 
+			var worldOwnerFound = false;
 			var playerNames = players.Values.Select(p => p.Name).ToHashSet();
 			foreach (var player in players.Values)
 			{
@@ -55,13 +57,12 @@ namespace OpenRA.Mods.Common.Lint
 				emitError("Found no player owning the world.");
 
 			var worldActor = map.Rules.Actors["world"];
-
 			var factions = worldActor.TraitInfos<FactionInfo>().Select(f => f.InternalName).ToHashSet();
 			foreach (var player in players.Values)
 				if (!string.IsNullOrWhiteSpace(player.Faction) && !factions.Contains(player.Faction))
 					emitError("Invalid faction {0} chosen for player {1}.".F(player.Faction, player.Name));
 
-			if (worldActor.HasTraitInfo<MPStartLocationsInfo>())
+			if (worldActor.HasTraitInfo<MapStartingLocationsInfo>())
 			{
 				var playerCount = players.Count(p => p.Value.Playable);
 				var spawns = new List<CPos>();
